@@ -111,6 +111,6 @@ If you build on this work, a link to the repo is enough. For an academic citatio
   institution = {MINES Paris -- PSL},
   year   = {2026},
   type   = {Technical case study},
-  url    = {https://github.com/<your-user>/intraday-imbalance-arbitrage}
+  url    = {https://github.com/aurelianpanait/intraday-imbalance-arbitrage}
 }
 ```
