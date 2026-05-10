@@ -1,0 +1,103 @@
+# =====================================================================
+# Python
+# =====================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Coverage / testing
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+.tox/
+
+# =====================================================================
+# Jupyter Notebooks
+# =====================================================================
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# =====================================================================
+# LaTeX
+# =====================================================================
+# Auxiliary files
+*.aux
+*.bbl
+*.blg
+*.brf
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.run.xml
+*.bcf
+
+# DO NOT ignore .pdf — the compiled paper is committed to the repo
+# DO NOT ignore .tex — source is committed
+
+# =====================================================================
+# IDE / OS
+# =====================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# =====================================================================
+# Environment / secrets
+# =====================================================================
+.env
+.env.local
+*.pem
+secrets.yaml
+
+# =====================================================================
+# Project-specific
+# =====================================================================
+# Models / serialisation
+*.pkl
+*.joblib
+*.h5
+
+# Local exploration scripts (anything starting with scratch_ or tmp_)
+scratch_*
+tmp_*
+explore_*
+
+# Large model outputs / checkpoints (keep data/processed/ committed)
+models/*.bin
+models/*.safetensors

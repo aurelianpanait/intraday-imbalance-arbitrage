@@ -1,0 +1,321 @@
+\documentclass{article}
+
+% PACKAGES
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage[margin=2cm]{geometry}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{eurosym}
+
+\usepackage[colorlinks=true, allcolors=black]{hyperref}
+\usepackage{balance}
+
+% INFORMATIONS
+\title{Intraday vs Imbalance Arbitrage on the Romanian Day-Ahead Market}
+\author{Aurelian Andrei Panait}
+\date{April 2026}
+
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% TITLEPAGE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{titlepage}
+    \centering
+
+    % LOGO MINES PSL
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.6\textwidth]{logo_mines_PSL.png}
+    \end{figure}
+
+    \vspace*{1cm}
+
+    {\Huge \textbf{Intraday vs Imbalance Arbitrage on the Romanian Power Market} \par}
+
+    \vspace{0.5cm}
+
+    {\Large \textit{A machine-learning approach to predicting grid direction and capturing the spread between intraday and imbalance prices.} \par}
+
+    \vspace{1.5cm}
+
+    {\Large \textbf{Author:}} \\
+    {\Large Aurelian Andrei Panait \par}
+
+    \vspace{1cm}
+    {\Large April 2026 \par}
+
+    \vfill
+
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    % CONTEXT BLOCK — variant (b): Case study with named client (ENGIE)
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+    {\Large \textit{Technical case study on intraday/imbalance arbitrage for ENGIE.}}\\[0.4cm]
+    {\Large Aurelian Andrei Panait}\\
+    {\Large MINES Paris · PSL (2026)}
+
+    \vfill
+
+\end{titlepage}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% ABSTRACT & TOC
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage
+
+\begin{abstract}
+\large
+The Romanian power system exhibits some of the widest imbalance-price spreads in Europe, opening a structural arbitrage between the intraday market and post-delivery imbalance settlement. We train a Gradient Boosting classifier to predict the sign of grid imbalance at least 1h45min before delivery, using only data available at the trading horizon: forecast errors, lagged grid state, time encodings, and lagged intraday prices. The model is evaluated on 87,934 fifteen-minute intervals between July 2022 and January 2025, with a strict temporal split that reserves the May--June 2024 validation window for threshold tuning and the July--December 2024 backtest window for out-of-sample performance only. The model reaches 74.3\% direction accuracy on the validation set and 67.8\% trade-level win rate over the six-month backtest. Converted into a confidence-weighted trading strategy capped at 10~MWh per interval, it generates a cumulative PnL of 46.66~M~RON across 17{,}308 trades, capturing 31.2\% of the oracle benchmark with a profit factor of 2.99 and a maximum drawdown of $-695.8$~kRON. The result confirms that grid-direction prediction transfers directly into trading edge on the Romanian market, while the absence of transaction costs and the thinness of the intraday order book imply a realistic live performance roughly 40--60\% of the backtest figure.
+\end{abstract}
+
+\clearpage
+\tableofcontents
+\clearpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% MAIN CONTENT (two-column from here)
+% Note: figure* environments (full-width, multi-panel exports) use [t!] instead
+% of [H] because [H] from the float package is incompatible with figure* in
+% two-column layout — LaTeX silently drops the figures otherwise.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\twocolumn
+
+\section{Introduction}
+
+The accelerating share of variable renewable generation in European power systems has widened the gap between scheduled day-ahead positions and real-time delivery. The transmission system operator (TSO) closes this gap through balancing reserves, and recovers the cost from imbalanced participants via a settlement price that is, by design, punitive in the direction the grid does not need. In Romania, where the share of wind and solar capacity exceeded 25\% of installed capacity by 2024 and where the intraday order book remains comparatively thin, the spread between intraday execution prices and imbalance settlement prices has become extreme: imbalance prices in our dataset range from $-36{,}590$ to $+69{,}543$~RON/MWh, against intraday prices that mostly trade between 300 and 700~RON/MWh.
+
+This dispersion creates a structural arbitrage. A participant who can predict the direction of the grid imbalance can voluntarily take the opposite physical position on the intraday market, knowing the imbalance settlement will compensate them at a price that is, on average, far away from the intraday price. The challenge is operational: the signal must be produced before the trading window closes, and must use only information available at that moment, not the realised grid state. Standard time-series forecasting tools tend to either ignore the lag constraint or implicitly leak future information through rolling features computed on the target itself.
+
+This paper develops and backtests a direction-prediction model for the Romanian imbalance market under strict operational constraints, operated as a recruitment case study for ENGIE. We frame the problem as binary classification of grid sign (surplus / deficit), train a Gradient Boosting model on 63{,}042 quarter-hour intervals between July 2022 and April 2024, optimise the decision threshold on a held-out May--June 2024 validation set, and evaluate the resulting trading strategy on a never-seen July--December 2024 backtest window. We report direction accuracy, classification metrics, and the full trading-level PnL distribution including profit factor and drawdown.
+
+\section{Methodology}
+
+\subsection{Dataset and operational lag constraints}
+
+The dataset covers the Romanian power market between July 1, 2022 and January 1, 2025 at 15-minute resolution, totalling 87{,}934 intervals across 17 columns. It combines four families of variables: grid state (imbalance volume, aFRR and mFRR activation), market prices (intraday VWAP, imbalance prices for surplus and deficit settlement), forecasts available the day before delivery (load, solar, wind, renewable totals), and realised generation per technology. Missing values are confined to physical generation columns (158 nulls maximum, 0.18\% of the dataset) and never appear in price or forecast variables; rows containing nulls are dropped without imputation. The CSV pre-flight check confirmed UTF-8 encoding without BOM and without double-encoded artefacts, so all numerical columns are read at their native precision.
+
+The trading horizon imposes a hard constraint on which features may enter the model. Intraday liquidity in Romania concentrates roughly one hour before delivery, and the realised imbalance volume for an interval is published with a 25-minute delay. We therefore impose two lag rules: forecast-derived features may use values up to 4 quarters before delivery (\texttt{FCST\_LAG = 4}, equivalent to one hour of trading window), and observed grid state may only be used with a 7-quarter lag (\texttt{REAL\_LAG = 7}, covering 1h trading + 25min publication delay + 15min safety buffer). Imbalance prices themselves are never used as features at any lag, since they are by construction unavailable before settlement.
+
+\subsection{Feature engineering}
+
+The target is the binary sign of grid imbalance volume at delivery time: $y = 1$ for surplus ($\text{imb\_volume} > 0$), $y = 0$ for deficit. Intervals where $\text{imb\_volume} = 0$ (578 rows, 0.7\%) are excluded as they carry no directional signal. Three families of features are built within the lag constraints described above. Forecast-error features capture the residual between day-ahead forecasts and the most recent realised values available at trading time, computed as $e_{\text{solar},t} = \text{solar}_{\text{fcst},t} - \text{solar}_{\text{real},t-7}$ and analogously for wind, with the lag chosen to match \texttt{REAL\_LAG}. Net-position features summarise residual demand and renewable share at the same lag horizon. Lagged grid-state features include $\text{imb\_volume}_{t-7}$ (most recent observable imbalance), $\text{imb\_volume}_{t-11}$ (one hour earlier), $\text{imb\_volume}_{t-96}$ (same hour yesterday), and $\text{imb\_volume}_{t-672}$ (same hour and weekday last week), together with one-hour and four-hour rolling means and standard deviations computed on the lag-7 series. Time encodings use sine/cosine pairs for hour-of-day and day-of-week. Lagged intraday VWAP at $t-4$ provides recent price context.
+
+\subsection{Train / validation / test split}
+
+The temporal split is strict: training covers July 2022 to April 2024 (63{,}042 rows), validation covers May--June 2024 (5{,}719 rows) and is used solely for threshold optimisation, and the test window covers July 2024 to January 2025 (17{,}610 rows) and is touched only once for the final backtest. The class balance shifts noticeably across these windows: training is 63.4\% surplus, validation 53.6\%, test 43.0\%. This regime drift, from a surplus-dominated training period to a deficit-dominated test period, motivates two design choices that reappear later: balanced sample weights during training, and threshold optimisation on validation rather than fixed at 0.5.
+
+\subsection{Model selection and trading strategy}
+
+Three classifiers were trained and compared on the validation set: logistic regression with $L_2$ regularisation, random forest with 200 trees, and gradient boosting with 200 estimators and learning rate 0.05. All three were fitted with class-balanced sample weights to correct the surplus-skew of the training data. Hyperparameters were not extensively tuned; the goal was to verify that the signal carries across model families before committing to one. Gradient boosting was selected on AUC-ROC as detailed in Section~\ref{sec:model_perf}.
+
+The trading strategy converts the predicted probability of surplus, $p_t = P(y_t = 1 \mid x_t)$, into a signal as follows. When $p_t \geq \theta_{\text{sell}}$, the strategy SELLs on the intraday market: this creates a voluntary physical deficit, which is then settled at $\text{imb\_price\_neg}$, expected to be low when the grid is in surplus. When $p_t \leq \theta_{\text{buy}}$, the strategy BUYs, creating a voluntary surplus settled at the high $\text{imb\_price\_pos}$ characteristic of grid deficit. Otherwise no trade is placed. The thresholds $\theta_{\text{sell}}$ and $\theta_{\text{buy}}$ are jointly optimised on the validation set (Section~\ref{sec:threshold}).
+
+Volume per trade is proportional to model confidence:
+\begin{equation}
+v_t = V_{\max} \cdot \frac{|p_t - 0.5|}{0.5}
+\label{eq:vol}
+\end{equation}
+with $V_{\max} = 10$~MWh per interval, in line with the operational sizing assumed for the case study. This sizing rule reduces exposure on uncertain predictions without requiring a separate position-sizing layer. The PnL of a SELL trade is
+\begin{equation}
+\text{PnL}^{\text{SELL}}_t = v_t \cdot (\text{ID}_t - \text{imb\_price\_neg}_t)
+\label{eq:pnl_sell}
+\end{equation}
+and symmetrically for BUY,
+\begin{equation}
+\text{PnL}^{\text{BUY}}_t = v_t \cdot (\text{imb\_price\_pos}_t - \text{ID}_t).
+\label{eq:pnl_buy}
+\end{equation}
+No transaction costs, no market-impact adjustment, and execution at the realised intraday VWAP are assumed throughout.
+
+\section{Results}
+
+\subsection{Exploratory data analysis}
+
+The first stylised fact of the Romanian imbalance market is that grid direction is not symmetric. Figure~\ref{fig:imb_dist} shows that 57.9\% of intervals are in surplus, 41.4\% in deficit, and only 0.7\% exactly balanced, with the volume distribution centred slightly above zero and tails extending to roughly $\pm$2~GW. The second-by-hour view of the same figure, restricted to the first week of January 2024, displays the persistence that the model will later exploit: the sign tends to remain stable for several consecutive intervals before flipping, rather than oscillating randomly.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_1___Grid_Imbalance_Volume_Distribution.png}
+    \caption{Grid imbalance volume distribution across the full dataset (87{,}934 intervals, July 2022 -- January 2025). Left: full-period histogram. Centre: surplus / deficit / balanced split. Right: one-week sample showing sign persistence at sub-hourly horizons.}
+    \label{fig:imb_dist}
+\end{figure*}
+
+The link between grid direction and imbalance prices, which is the core economic argument of the strategy, is documented in Figure~\ref{fig:price_analysis} and Figure~\ref{fig:arb_justify}. The monthly average panel in Figure~\ref{fig:price_analysis} shows that imbalance prices track the intraday VWAP in level but diverge sharply during stressed months (notably April--May 2024, when the imbalance for surplus reached monthly averages below $-1{,}000$~RON/MWh). The correlation matrix on the same figure highlights the dominant relationships used downstream: $\text{imb\_volume}$ correlates $+0.70$ with mFRR-down activation and $-0.57$ with mFRR-up, confirming that the realised imbalance volume is a direct image of the TSO's balancing actions.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_2___Price_Analysis___Correlations.png}
+    \caption{Price analysis and correlations. Top-left: monthly averages of intraday VWAP and imbalance prices. Top-right: distribution of potential PnL per MWh under perfect direction prediction. Bottom-left: correlation matrix over physical variables. Bottom-right: average imbalance volume and surplus rate by hour of day.}
+    \label{fig:price_analysis}
+\end{figure*}
+
+Figure~\ref{fig:arb_justify} makes the trade-level case explicit. When $\text{imb\_volume} > 0$ (grid surplus), $\text{imb\_price\_neg}$ collapses toward zero or below, so selling on intraday and settling as deficit captures the spread $\text{ID} - \text{imb\_neg}$. When $\text{imb\_volume} < 0$ (grid deficit), $\text{imb\_price\_pos}$ jumps to several thousand RON/MWh, so buying on intraday and settling as surplus captures $\text{imb\_pos} - \text{ID}$. The right-hand panel quantifies this: average potential SELL spread of 1{,}076~RON/MWh in surplus quadrants, average BUY spread of 1{,}116~RON/MWh in deficit quadrants. Predicting grid direction is therefore directly equivalent to predicting which side of this asymmetry will pay.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_3___Grid_Status_vs_Imbalance_Prices__Arbitrage_Justification_.png}
+    \caption{Grid status as the dominant driver of imbalance prices. Left: $\text{imb\_volume}$ vs $\text{imb\_price\_pos}$ (corr.\ $-0.52$). Centre: same vs $\text{imb\_price\_neg}$ (corr.\ $-0.53$). Right: arbitrage spread by grid status, showing the asymmetric pay-off structure that the strategy targets.}
+    \label{fig:arb_justify}
+\end{figure*}
+
+\subsection{Model performance on validation}
+\label{sec:model_perf}
+
+The three candidate models perform within a narrow band on the validation set. Logistic regression reaches 73.6\% accuracy and 0.813 AUC-ROC, random forest 73.2\% and 0.806, gradient boosting 74.3\% and 0.817 (Figure~\ref{fig:model_perf}). The closeness of the three families, combined with the fact that even the linear model exceeds 0.81 AUC, indicates that the predictive signal is broadly distributed across features rather than concentrated in non-linear interactions that only a tree ensemble can extract. Gradient boosting is retained on AUC-ROC margin and, more importantly, on the symmetry of its confusion matrix: 1{,}928 deficit and 2{,}319 surplus correctly classified, 728 and 744 errors --- balanced to within 2\%, confirming that the sample-weight correction successfully neutralised the training-set surplus skew.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_4___Model_Performance___Feature_Importances.png}
+    \caption{Validation-set performance. Left: accuracy and AUC-ROC across the three model families. Centre: confusion matrix of the gradient boosting model. Right: top-15 feature importances, dominated by lagged imbalance volume.}
+    \label{fig:model_perf}
+\end{figure*}
+
+The feature-importance ranking is concentrated to a degree that matters operationally. The single feature $\text{imb\_volume}_{t-7}$ accounts for roughly 0.58 of total importance, with $\text{imb\_volume}_{t-96}$ (same hour yesterday) and the one-hour rolling mean each contributing further single-digit shares. Forecast-error features (load, solar, wind) appear consistently but with one-tenth the weight of the lagged grid state. The economic interpretation is that grid imbalance is, at this horizon, primarily an autocorrelated process with strong daily seasonality, on top of which forecast errors add a smaller corrective signal. This is consistent with the visual persistence observed in Figure~\ref{fig:imb_dist}.
+
+\subsection{Trading backtest on July--December 2024}
+
+The headline result of the strategy on the never-seen test period is summarised in Table~\ref{tab:kpi}. Total PnL reaches 46.66~M~RON over six months across 17{,}308 trades, with a win rate of 67.8\% and an average PnL per trade of 2{,}696~RON. The capture ratio against the oracle (a strategy with perfect direction prediction at the same volume cap) is 31.2\%; the gap reflects both the residual 25\% direction-accuracy error and the conservative confidence-weighted volume sizing.
+
+\begin{table}[H]
+\centering
+\caption{Strategy performance on the July--December 2024 backtest window.}
+\label{tab:kpi}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Total PnL & 46.66~M~RON \\
+Oracle PnL (perfect prediction) & 149.32~M~RON \\
+Capture ratio & 31.2\% \\
+Number of trades & 17{,}308 \\
+Average volume per trade & 5.2~MWh \\
+Win rate & 67.8\% \\
+Average PnL per trade & 2{,}696~RON \\
+Profit factor & 2.99 \\
+Maximum drawdown & $-695.8$~kRON \\
+Direction accuracy & 74.8\% \\
+Total volume traded & 90{,}321~MWh \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The temporal structure of the PnL is visible in Figure~\ref{fig:pnl}. Cumulative PnL rises steadily across the six months, with no extended drawdown periods: the maximum drawdown of $-695.8$~kRON represents 1.5\% of total PnL, an unusually asymmetric risk profile that derives directly from the truncation of imbalance prices at $\pm 5{,}000$~RON/MWh in the Romanian market design. The monthly breakdown shows a softer August (2{,}896~kRON, the only month below 5~M) followed by the strongest stretch in October--November (10{,}393 and 10{,}873~kRON respectively), with December weaker again at 5{,}706~kRON. The PnL-per-trade histogram is right-skewed with a clear mass of capped extreme wins on the right side and a smaller but visible cluster of capped losses on the left, both at the $\pm 5{,}000$~RON cap implied by the price-cap and 1~MWh minimum volume; the mean of 2{,}696~RON sits well above the median of the bulk distribution, reflecting that the strategy's edge is concentrated in the rare, large-spread intervals.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_5___PnL_Analysis__Cumulative__Monthly__Distribution__Win_Rate_.png}
+    \caption{Backtest PnL analysis (July--December 2024). Top-left: cumulative PnL in thousands of RON. Top-right: monthly PnL breakdown in thousands of RON. Bottom-left: distribution of PnL per traded interval. Bottom-right: win rate by hour of day, above the 50\% baseline at every hour.}
+    \label{fig:pnl}
+\end{figure*}
+
+The win-rate-by-hour panel of Figure~\ref{fig:pnl} delivers a separate finding: the strategy wins above 50\% in every single hour of the day. Performance peaks at 11:00--12:00 (close to 78\% win rate), where peak solar production creates the most predictable surplus conditions, and is weakest at 15:00--16:00 (close to 56\%) during the transition from solar to evening demand. The fact that no hour collapses to chance suggests the model has not learned a single high-confidence regime that drives all profits but has, instead, a broad-based edge that survives intraday seasonality.
+
+\subsection{Threshold sensitivity}
+\label{sec:threshold}
+
+The decision thresholds $\theta_{\text{sell}}$ and $\theta_{\text{buy}}$ were optimised by maximising PnL on the validation set (May--June 2024) over a grid of values between 0.50 and 0.80. The optimum sits at 0.51, equivalent to trading whenever the model has any directional bias above coin-flip. Figure~\ref{fig:threshold} shows the PnL surface and the corresponding trade count: PnL is approximately flat between 0.50 and 0.65 (oscillating between 38 and 40~M~RON on the validation set) and drops sharply above 0.65, while the number of trades falls monotonically from roughly 5{,}700 at $\theta = 0.50$ to 2{,}400 at $\theta = 0.80$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{Fig_6___Threshold_Optimization_on_Validation_Set.png}
+    \caption{Threshold optimisation on the validation set. PnL (left axis) is flat in the 0.50--0.65 region and drops above 0.65; trade count (right axis) decreases monotonically with the threshold.}
+    \label{fig:threshold}
+\end{figure}
+
+The flatness of the PnL response in the 0.50--0.65 band is the most informative observation of this analysis. It indicates that the model's edge does not depend on selecting only its most confident predictions: the average PnL per trade is roughly preserved as moderately confident predictions are added to the trading set. A strategy that is robust to its threshold choice within a wide band is also a strategy that does not rely on the rare tail of the probability distribution to make money, which is a desirable property for live deployment.
+
+\section{Discussion}
+
+\subsection{Where the edge comes from}
+
+The 31.2\% capture ratio against the oracle is the cleanest summary of the strategy's value: roughly one third of the theoretical maximum is harvested by a single classifier with no regime-switching, no Kelly sizing, and no transaction-cost modelling. Two structural facts in the data make this possible. First, grid imbalance is autocorrelated at the relevant horizon: the lag-7 imbalance volume alone carries 0.58 of the model's importance, and is by construction always available 1h45min before delivery. Second, the Romanian imbalance price design is asymmetric and the spreads are wide, with average BUY and SELL spreads above 1{,}000~RON/MWh; even modest direction accuracy translates into large PnL per correct trade. The combination is what gives the strategy its 2.99 profit factor: when the model is right, it is right on a high-spread interval; when it is wrong, the loss is bounded by the same price-cap structure.
+
+\subsection{Limitations and the gap to live performance}
+
+Several modelling choices flatter the backtest relative to a live deployment. First, no transaction costs are modelled, so spread, exchange fees, and clearing costs are absent from the PnL. On Romanian intraday markets, a conservative estimate of round-trip costs at 2--3~RON/MWh would consume a single-digit percentage of total PnL but would change the threshold-sensitivity analysis materially, since trades close to $\theta = 0.5$ have small expected edge. Second, the strategy executes at the realised intraday VWAP for the quarter, which is more favourable than the marginal price an agent would obtain by lifting the order book: the Romanian intraday market is thin, and a 10~MWh order may move the price by a measurable amount. Third, the Sharpe ratio of 13.25 reported by the standard daily formula is an artefact of the wide imbalance spreads and the absence of costs; a realistic live estimate, based on comparable European arbitrage strategies, would sit between 1.5 and 3.0. We report the raw figure for transparency but treat it as upper-bound only.
+
+\subsection{Applicability beyond the case study}
+
+The construction transfers to other European markets that share two features: a published imbalance price with structural asymmetry between surplus and deficit, and a sufficiently liquid intraday segment to take the opposite physical position before gate closure. The exact lag constants (\texttt{FCST\_LAG}, \texttt{REAL\_LAG}) depend on local rules for forecast publication and post-delivery data release, and would need to be re-derived per TSO. The feature-importance ranking suggests that the model would behave similarly in any market where grid imbalance is autocorrelated at the 30-minute to 2-hour horizon, which is the typical regime for systems with high renewable penetration. Markets with active battery participation in balancing reserves may show shorter autocorrelation horizons and therefore weaker performance from this exact feature set.
+
+\subsection{Sources of error and possible improvements}
+
+Three extensions are likely to improve performance without changing the underlying framework. Volume sizing by Kelly fraction, derived from the model's calibrated probability and the empirical PnL distribution per probability bin, would replace the linear $|p - 0.5|$ rule with one that respects the asymmetry of wins and losses. Regime detection, possibly via a separate classifier on macro-state features (extreme weather, holidays, large planned outages), would allow the strategy to step out of the market during periods when imbalance prices behave non-stationarily; the soft August month in the backtest (2{,}896~kRON) is consistent with such a regime effect. Adding cross-border features (interconnection flows with Hungary, Bulgaria, and Serbia) and short-term temperature forecasts would address residual error in the forecast-error component, though the marginal information content of these features in the Romanian market remains an open question.
+
+\section{Conclusion}
+
+This case study trains and backtests a direction-prediction model for the Romanian imbalance market, framed as binary classification of grid sign one hour and forty-five minutes before delivery, and converts the resulting probability into a confidence-weighted intraday trading strategy. On a held-out July--December 2024 period of 17{,}610 quarter-hours, the model reaches 74.8\% direction accuracy and the strategy realises 46.66~M~RON of cumulative PnL across 17{,}308 trades, with a win rate of 67.8\%, a profit factor of 2.99, and a maximum drawdown of $-695.8$~kRON.
+
+The main trade-off discovered is between capture ratio and operational realism. The 31.2\% capture against the oracle is achievable only because no transaction costs are subtracted, the agent executes at intraday VWAP, and the volume cap of 10~MWh is small enough not to move the order book. A live deployment would face all three of these frictions and would, on a conservative estimate, retain 40--60\% of the backtest PnL --- still a profitable strategy, but one whose edge depends on careful execution rather than only on the model.
+
+The economic case for direction prediction on imbalance markets follows directly from the structural asymmetry of the Romanian price design: average BUY and SELL spreads above 1{,}000~RON/MWh combined with autocorrelation at the 1h45min horizon are sufficient to generate a positive expectation from a model with single-feature dominance. Whether the same construction transfers to deeper, more liquid markets where the spread is narrower and the autocorrelation shorter is a question that requires market-by-market calibration of the lag constants and feature horizons, and is left to future work.
+
+\onecolumn
+\appendix
+
+\section{Nomenclature}
+
+\subsection*{Abbreviations}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Acronym} & \textbf{Meaning} \\
+\midrule
+TSO & Transmission System Operator \\
+DA & Day-Ahead market \\
+ID & Intraday market \\
+VWAP & Volume-Weighted Average Price \\
+aFRR & Automatic Frequency Restoration Reserve \\
+mFRR & Manual Frequency Restoration Reserve \\
+PnL & Profit and Loss \\
+AUC-ROC & Area Under the Curve --- Receiver Operating Characteristic \\
+GBT & Gradient Boosting Trees \\
+RF & Random Forest \\
+LR & Logistic Regression \\
+MW / MWh & Megawatt (power) / Megawatt-hour (energy) \\
+RON & Romanian leu (currency) \\
+CSV & Comma-Separated Values \\
+BOM & Byte-Order Mark (UTF-8 encoding artefact) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection*{Symbols}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Symbol} & \textbf{Description} & \textbf{Unit} \\
+\midrule
+$t$ & Quarter-hour timestep index (15-minute intervals) & --- \\
+$y_t$ & Binary target: $1$ if grid surplus, $0$ if grid deficit at $t$ & --- \\
+$x_t$ & Feature vector available at trading time for slot $t$ & --- \\
+$p_t$ & Model probability of surplus, $P(y_t = 1 \mid x_t)$ & --- \\
+$\theta_{\text{sell}}$ & Decision threshold for SELL signal, optimised on validation & --- \\
+$\theta_{\text{buy}}$ & Decision threshold for BUY signal, $\theta_{\text{buy}} = 1 - \theta_{\text{sell}}$ & --- \\
+$v_t$ & Volume traded at slot $t$ & MWh \\
+$V_{\max}$ & Maximum volume per interval (set to 10) & MWh \\
+$\text{ID}_t$ & Intraday VWAP execution price at slot $t$ & RON/MWh \\
+$\text{imb\_price\_pos}_t$ & Imbalance settlement price for surplus participants & RON/MWh \\
+$\text{imb\_price\_neg}_t$ & Imbalance settlement price for deficit participants & RON/MWh \\
+$\text{imb\_volume}_t$ & Realised grid imbalance volume at slot $t$ & MW \\
+$e_{\text{solar},t}$ & Solar forecast error, $\text{solar}_{\text{fcst},t} - \text{solar}_{\text{real},t-7}$ & MW \\
+$e_{\text{wind},t}$ & Wind forecast error, defined analogously to $e_{\text{solar},t}$ & MW \\
+$\text{FCST\_LAG}$ & Forecast feature lag (4 quarters $=$ 1 hour trading window) & quarters \\
+$\text{REAL\_LAG}$ & Observed grid-state lag (7 quarters $=$ 1h45min) & quarters \\
+$\text{PnL}_t^{\text{SELL}}$ & PnL of a SELL trade at slot $t$, see Eq.~\eqref{eq:pnl_sell} & RON \\
+$\text{PnL}_t^{\text{BUY}}$ & PnL of a BUY trade at slot $t$, see Eq.~\eqref{eq:pnl_buy} & RON \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

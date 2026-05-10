@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # allows manual trigger from the Actions tab
+
+jobs:
+  sanity-checks:
+    name: Sanity checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify project structure
+        run: |
+          echo "Checking required files and directories exist..."
+          test -f README.md             || (echo "Missing README.md"            && exit 1)
+          test -f LICENSE               || (echo "Missing LICENSE"              && exit 1)
+          test -f requirements.txt      || (echo "Missing requirements.txt"     && exit 1)
+          test -f paper/main.pdf        || (echo "Missing paper/main.pdf"       && exit 1)
+          test -f paper/main.tex        || (echo "Missing paper/main.tex"       && exit 1)
+          test -d notebooks             || (echo "Missing notebooks/"           && exit 1)
+          test -d figures               || (echo "Missing figures/"             && exit 1)
+          test -d data/processed        || (echo "Missing data/processed/"      && exit 1)
+          echo "All required files present."
+
+      - name: Verify notebook is valid JSON
+        run: |
+          python -c "
+          import json, sys
+          from pathlib import Path
+          for nb in Path('notebooks').glob('*.ipynb'):
+              try:
+                  with open(nb) as f:
+                      data = json.load(f)
+                  assert 'cells' in data
+                  print(f'OK: {nb} ({len(data[\"cells\"])} cells)')
+              except Exception as e:
+                  print(f'FAIL: {nb}: {e}')
+                  sys.exit(1)
+          "
+
+      - name: Verify backtest CSV is parseable
+        run: |
+          python -c "
+          import pandas as pd
+          df = pd.read_csv('data/processed/backtest_results_final.csv')
+          print(f'Shape: {df.shape}')
+          print(f'Columns: {list(df.columns)}')
+          assert df.shape[0] > 1000, 'Too few rows in backtest CSV'
+          required = ['P_Surplus', 'Signal', 'Volume_MWh', 'PnL_RON', 'Cumulative_PnL_RON']
+          missing = [c for c in required if c not in df.columns]
+          assert not missing, f'Missing required columns: {missing}'
+          print('CSV schema OK.')
+          "
+
+      - name: Verify all paper figures present
+        run: |
+          for i in 1 2 3 4 5 6; do
+              count=$(ls paper/pictures/Fig_${i}_*.png 2>/dev/null | wc -l)
+              if [ "$count" -eq 0 ]; then
+                  echo "Missing Fig_${i}_*.png in paper/pictures/"
+                  exit 1
+              fi
+          done
+          echo "All 6 figures present in paper/pictures/."

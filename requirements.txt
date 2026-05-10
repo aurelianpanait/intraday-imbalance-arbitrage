@@ -1,0 +1,15 @@
+# Core scientific stack
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
+
+# Visualisation
+matplotlib>=3.7
+seaborn>=0.12
+
+# Notebook environment
+jupyter>=1.0
+ipykernel>=6.25
+
+# Note: `google.colab` import in the notebook is a Colab-only convenience
+# for mounting Drive. It is auto-skipped when running outside Colab.
